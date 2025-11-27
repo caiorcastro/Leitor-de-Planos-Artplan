@@ -98,6 +98,15 @@ def parse_sheet(df: pd.DataFrame, default_year: int) -> List[Record]:
     """Parse a sheet, handling moving headers and month markers."""
     headers = find_headers(df)
     records: List[Record] = []
+    stats = {
+        "rows_seen": 0,
+        "rows_processed": 0,
+        "records": 0,
+        "skipped_region": 0,
+        "skipped_rot_time": 0,
+        "skipped_invalid_time": 0,
+        "skipped_missing_info": 0,
+    }
     last_month: Optional[int] = None
 
     for i in range(len(headers) - 1):
@@ -140,6 +149,7 @@ def parse_sheet(df: pd.DataFrame, default_year: int) -> List[Record]:
             continue
 
         for _, row in block.iterrows():
+            stats["rows_seen"] += 1
             row_month = block_month
 
             # If we still don't know the month, try to infer from this row.
@@ -164,24 +174,39 @@ def parse_sheet(df: pd.DataFrame, default_year: int) -> List[Record]:
             # Use the most recent month hint available.
             row_month = row_month or block_month
 
+            region = row[1]
+            if isinstance(region, str):
+                region_norm = region.strip().upper()
+            else:
+                region_norm = ""
+            if region_norm not in {"NET", "NATIONAL", "NACIONAL"}:
+                stats["skipped_region"] += 1
+                continue
+
             channel, show, daytime = row[2], row[3], row[4]
-            if (
-                pd.isna(channel)
-                or pd.isna(show)
-                or pd.isna(daytime)
-                or not isinstance(daytime, str)
-                or "-" not in daytime
-            ):
+            if pd.isna(channel) or pd.isna(show) or pd.isna(daytime) or not isinstance(daytime, str):
+                stats["skipped_missing_info"] += 1
+                continue
+
+            # Clean daytime formatting quirks (e.g., "22;25 - 23;30") and skip rotativos.
+            daytime_clean = daytime.replace(";", ":").strip()
+            if "ROT" in daytime_clean.upper() or daytime_clean in {"-", ""}:
+                stats["skipped_rot_time"] += 1
+                continue
+            if "-" not in daytime_clean:
+                stats["skipped_invalid_time"] += 1
                 continue
 
             if row_month is None:
                 continue
 
             try:
-                start_time, end_time = [t.strip() for t in daytime.split("-")[:2]]
+                start_time, end_time = [t.strip() for t in daytime_clean.split("-")[:2]]
             except Exception:
+                stats["skipped_invalid_time"] += 1
                 continue
 
+            stats["rows_processed"] += 1
             for col, day_num in days:
                 val = row[col]
                 if pd.notna(val):
@@ -197,11 +222,12 @@ def parse_sheet(df: pd.DataFrame, default_year: int) -> List[Record]:
                                         Horario_final=end_time,
                                     )
                                 )
+                                stats["records"] += 1
                     except Exception:
                         # Non-numeric cell; ignore.
                         pass
 
-    return records
+    return records, stats
 
 
 def main() -> None:
@@ -249,7 +275,7 @@ def main() -> None:
     df = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
 
     print("Processando inserções...")
-    records = parse_sheet(df, default_year=year)
+    records, stats = parse_sheet(df, default_year=year)
     if not records:
         print("Nenhuma inserção encontrada. Verifique a aba ou formato.", file=sys.stderr)
         sys.exit(1)
@@ -270,6 +296,18 @@ def main() -> None:
     )
     print(f"Salvo {len(out_df)} linhas em {out_path}")
     print("Distribuição por mês:", summary)
+    print(
+        "Resumo processamento:",
+        {
+            "rows_seen": stats["rows_seen"],
+            "rows_processados": stats["rows_processed"],
+            "registros_gerados": stats["records"],
+            "skip_regiao": stats["skipped_region"],
+            "skip_rotativo": stats["skipped_rot_time"],
+            "skip_horario_invalido": stats["skipped_invalid_time"],
+            "skip_info_incompleta": stats["skipped_missing_info"],
+        },
+    )
 
 
 if __name__ == "__main__":
