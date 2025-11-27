@@ -111,7 +111,10 @@ def parse_sheet(df: pd.DataFrame, default_year: int) -> List[Record]:
                     last_month = month
 
         header_row = df.iloc[h_idx]
-        for val in header_row:
+        for col, val in header_row.items():
+            # Ignore month hints in metric/footer columns (>=42).
+            if col >= 42:
+                continue
             month = detect_month(val)
             if month:
                 last_month = month
@@ -260,7 +263,7 @@ def main() -> None:
 
     out_df = pd.DataFrame([r.__dict__ for r in records])
     out_df.sort_values(["Data", "Canal", "TV_Show", "Horario_inicial"], inplace=True)
-    out_df.to_csv(out_path, index=False)
+    out_df.to_csv(out_path, index=False, encoding="utf-8-sig")
 
     summary = (
         out_df["Data"].str.slice(0, 7).value_counts().sort_index().to_dict()
